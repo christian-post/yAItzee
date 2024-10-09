@@ -1,0 +1,3 @@
+gamma: 0.99
+learning_rate: 0.001
+training_episodes: 1000

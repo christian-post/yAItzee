@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+from typing import Union
 
 
 def prepare_input(dice: list[int], score_categories: list[int], rolls_left: int):
@@ -13,12 +14,15 @@ def prepare_input(dice: list[int], score_categories: list[int], rolls_left: int)
         dice_one_hot[i, value - 1] = 1  # -1 because dice values are from 1 to 6
     
     # Flatten the dice one-hot encoding and combine with score categories and rolls left
-    return torch.cat([dice_one_hot.flatten(),
-                      torch.tensor(score_categories, dtype=torch.float),
-                      torch.tensor([rolls_left], dtype=torch.float)])
+    input_vector = torch.cat([
+        dice_one_hot.flatten(),
+        torch.tensor(score_categories, dtype=torch.float),
+        torch.tensor([rolls_left], dtype=torch.float)])
+    
+    return input_vector
 
 
-def reroll_dice(dice: torch.Tensor, decisions: np.array | list[int]):
+def reroll_dice(dice: torch.Tensor, decisions: Union[np.array, list[int]]):
     """
     Re-roll the dice based on the re-roll decisions.
     

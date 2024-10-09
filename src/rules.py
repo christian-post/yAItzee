@@ -1,6 +1,7 @@
 import numpy as np
 from collections import Counter
 import torch
+from typing import Union
 
 
 def is_small_straight(dice: list[int]) -> bool:
@@ -69,7 +70,7 @@ def validate_dice_categories(dice: list[int], score_categories: list[int]) -> li
     return valid_categories
 
 
-def validate_dice_reroll(decision: torch.tensor | np.array | list[int], rolls_left: int) -> bool:
+def validate_dice_reroll(decision: Union[torch.tensor,np.array,list[int]], rolls_left: int) -> bool:
     """
     Validate if the dice re-roll decision is valid based on the number of rolls left.
     
