@@ -1,8 +1,11 @@
 from collections import Counter
+import torch
+import numpy as np
+from typing import Union
 
 
 
-def calculate_score(dice, category):
+def calculate_score(dice: Union[torch.Tensor, np.array, list[int]], category: int) -> int:
     """
     Calculate the score for the selected category based on the current dice.
     
@@ -13,6 +16,8 @@ def calculate_score(dice, category):
     Returns:
     int: The calculated score for the selected category.
     """
+    if type(dice) == torch.Tensor:
+        dice = dice.detach().numpy()
     
     # Count occurrences of each die value
     dice_counter = Counter(dice)

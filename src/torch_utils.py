@@ -1,4 +1,5 @@
 import torch
+from torch import nn
 import numpy as np
 from typing import Union
 
@@ -20,6 +21,13 @@ def prepare_input(dice: list[int], score_categories: list[int], rolls_left: int)
         torch.tensor([rolls_left], dtype=torch.float)])
     
     return input_vector
+
+
+def initialize_weights(m):
+    if isinstance(m, nn.Linear):
+        nn.init.xavier_uniform_(m.weight)  # Xavier initialization
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0)
 
 
 def reroll_dice(dice: torch.Tensor, decisions: Union[np.array, list[int]]):
