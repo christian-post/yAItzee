@@ -16,8 +16,8 @@ from utils import plot_policy_losses, plot_game_scores, format_input
 
 
 logging.basicConfig(
-        level=logging.DEBUG,
-        # level=logging.INFO,
+        # level=logging.DEBUG,
+        level=logging.INFO,
         format="%(asctime)s - %(levelname)s: %(message)s", datefmt="%d-%b-%y %H:%M:%S",
         handlers=[
             logging.FileHandler("debug.log"),
@@ -98,6 +98,8 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
             dice = torch.randint(1, 7, (5,))
             logging.debug("initial roll: %s" % dice)
 
+            log_probs_turn = []  # Store log probabilities for the current turn
+
             # While there are rolls left, make re-roll decisions
             while rolls_left > 0:
                 logging.debug("re-rolls left: %s" % rolls_left)
@@ -111,12 +113,12 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
                 
                 # Sample action (re-roll decision) from the policy's probability distribution
                 dice_action_dist = Bernoulli(dice_decisions)
+                # dice_action_dist = Categorical(dice_decisions)
                 dice_action = dice_action_dist.sample()  # Sample action based on policy
 
                 logging.debug("dice action: %s" % dice_action)
                 
-                # log_probs.append(dice_action_dist.log_prob(dice_action))  # Store log prob for backprop
-                
+                log_probs_turn.append(dice_action_dist.log_prob(dice_action).sum())
 
                 # Apply dice re-roll decision
                 if dice_action.sum() == 0:
@@ -131,7 +133,8 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
             score_action_dist = Categorical(score_decision)
             score_action = score_action_dist.sample()  # Sample score category
             
-            log_probs.append(score_action_dist.log_prob(score_action))  # Store log prob for backprop
+            # Store log prob for backprop
+            log_probs_turn.append(score_action_dist.log_prob(score_action))  
             
             # Get valid categories and ensure action is valid
             valid_categories = validate_dice_categories(dice.numpy(), score_categories)
@@ -163,8 +166,12 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
             logging.debug("score decision: %s" % score_decision_idx)
             logging.debug("score categories: %s" % "".join([str(x) for x in score_categories]))
         
-            # Store the final reward (total score for the turn)
-            rewards.append(score)
+            # Replicate the reward for each action taken in this turn (re-rolls + score decision)
+            for _ in log_probs_turn:
+                rewards.append(score)  # Add the same reward for each action in this turn
+            
+            # Add the log probabilities of all actions from this turn to the main list
+            log_probs.extend(log_probs_turn)
         
         # Compute discounted rewards
         discounted_rewards = compute_discounted_rewards(rewards, settings["gamma"])
@@ -177,7 +184,8 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
         policy_loss = []
         logging.debug("computing policy loss")
         for log_prob, reward in zip(log_probs, discounted_rewards):
-            policy_loss.append(-log_prob * reward)  # Multiply log-probability by the discounted reward
+            # Multiply log-probability by the discounted reward
+            policy_loss.append(-log_prob * reward)
 
         policy_loss = torch.stack(policy_loss).sum()
         logging.debug("policy loss: %s" % policy_loss)
