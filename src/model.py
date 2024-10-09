@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions import Bernoulli, Categorical
+from torchinfo import summary
 import yaml
 import numpy as np
 from tqdm import tqdm
@@ -11,7 +12,7 @@ import logging
 from torch_utils import prepare_input, reroll_dice, initialize_weights
 from rules import validate_dice_categories
 from score import calculate_score
-from utils import plot_policy_losses, plot_game_scores
+from utils import plot_policy_losses, plot_game_scores, format_input
 
 
 logging.basicConfig(
@@ -84,7 +85,7 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
     for episode in tqdm(
         range(settings["training_episodes"]), 
         disable=logging.getLogger().isEnabledFor(logging.DEBUG)):
-        logging.debug("Starting Episode  %s" % (episode + 1))
+        logging.debug("############### Starting Episode %s ###############" % (episode + 1))
         rewards = []
         log_probs = []
 
@@ -102,7 +103,7 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
                 logging.debug("re-rolls left: %s" % rolls_left)
 
                 input_vector = prepare_input(dice, score_categories, rolls_left)
-                logging.debug("input vector: %s" % input_vector)
+                logging.debug("input vector: %s" % format_input(input_vector))
                 dice_decisions, score_decision = model(input_vector, rolls_left)
 
                 logging.debug("dice decisions: %s" % dice_decisions)
@@ -134,7 +135,7 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
             
             # Get valid categories and ensure action is valid
             valid_categories = validate_dice_categories(dice.numpy(), score_categories)
-            logging.debug("valid categories: %s" % valid_categories)
+            logging.debug("valid categories: %s" % "".join([str(x) for x in valid_categories]))
             score_decision_idx = score_action.item()
             
             if valid_categories[score_decision_idx] == 1:
@@ -160,7 +161,7 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
                 score_categories[score_decision_idx] = 1
 
             logging.debug("score decision: %s" % score_decision_idx)
-            logging.debug("score categories: %s" % score_categories)
+            logging.debug("score categories: %s" % "".join([str(x) for x in score_categories]))
         
             # Store the final reward (total score for the turn)
             rewards.append(score)
@@ -205,6 +206,8 @@ if __name__ == "__main__":
         settings = yaml.safe_load(file)
 
     model = DiceNetwork()
+    summary(model)
+
     optimizer = get_optimizer(model, settings)
 
     model.apply(initialize_weights)  # Xavier initialization (probably unnecessary)
