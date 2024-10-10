@@ -1,4 +1,6 @@
 import sys
+import os
+from shutil import copy2
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -16,8 +18,8 @@ from utils import plot_policy_losses, plot_game_scores, format_input, format_sco
 
 
 logging.basicConfig(
-        # level=logging.DEBUG,
-        level=logging.INFO,
+        level=logging.DEBUG,
+        # level=logging.INFO,
         format="%(asctime)s - %(levelname)s: %(message)s", datefmt="%d-%b-%y %H:%M:%S",
         handlers=[
             logging.FileHandler("debug.log", mode="w"),
@@ -34,9 +36,9 @@ class DiceNetwork(nn.Module):
 
         device = torch.cuda.get_device_name(torch.cuda.current_device())
         print(f"The model is running on {device}")
-        
+
         # Shared layers
-        self.fc1 = nn.Linear(44, 128)  # Input: dice (30), score info (26), rolls left (1)
+        self.fc1 = nn.Linear(44, 128)  # Input: dice (30), score info (13), rolls left (1)
         self.fc2 = nn.Linear(128, 128)  # Shared hidden layer
         self.fc3 = nn.Linear(128, 128)  # Another shared hidden layer
         
@@ -84,14 +86,16 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
 
     for episode in tqdm(
         range(settings["training_episodes"]), 
-        disable=logging.getLogger().isEnabledFor(logging.DEBUG)):
+        disable=logging.getLogger().isEnabledFor(logging.DEBUG)
+        ):
         logging.debug("############################ Starting Episode %s ############################" % (episode + 1))
-        rewards = []
-        log_probs = []
-        entropy_terms = []  # List to store entropy terms
+
+        rewards = []  # store the rewards for actions based on the score sheet
+        log_probs = []  # store the log probabilities of actions for reward calculation
+        entropy_terms = []  # store mean entropy of actions to calculate the total entropy
 
         # Initialize game state
-        score_categories = [0] * 13  # All categories unfilled
+        score_categories = [0] * 13  # Score card, all categories unfilled (either 0 or 1)
         scores_achieved = [0] * 13  # Store the actual scores after each turn
         
         for _ in range(13):  # 13 turns in Yahtzee
@@ -107,18 +111,18 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
                 logging.debug("rerolls left: %s" % rolls_left)
 
                 input_vector = prepare_input(dice, score_categories, rolls_left)
-                logging.debug("input vector: %s" % format_input(input_vector))
                 dice_decisions, score_decisions = model(input_vector, rolls_left)
 
+                logging.debug("input vector: %s" % format_input(input_vector))
                 logging.debug("dice decisions: %s" % dice_decisions)
                 logging.debug("score decisions: %s" % score_decisions)
                 
                 # Sample action (re-roll decision) from the policy's probability distribution
                 dice_action_dist = Bernoulli(dice_decisions)
-                # Collect entropy for dice decisions
+                # Collect entropy for dice decisions (higher means more uncertainty)
                 entropy_terms.append(dice_action_dist.entropy().mean())
                 # Sample action based on policy
-                dice_action = dice_action_dist.sample()  
+                dice_action = dice_action_dist.sample()
 
                 logging.debug("dice action: %s" % dice_action)
                 
@@ -161,7 +165,7 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
                     unfilled_categories = [i for i, filled in enumerate(score_categories) if filled == 0]
                     # Randomly pick a remaining category
                     score_decision_idx = np.random.choice(unfilled_categories)
-                    score = 0
+                    score = -10  # negative Score as penalty
                 else:
                     # Select the valid category with the highest predicted score
                     valid_scores = np.where(np.array(valid_categories) == 1, score_decisions.detach().numpy(), -np.inf)
@@ -184,14 +188,15 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
             logging.debug("scores taken after this turn: %s" % "".join([str(x) for x in score_categories]))
         
             # Replicate the reward for each action taken in this turn (re-rolls + score decision)
+            # reward is the score of the chosen category, or -10 if a category was crossed out
             for _ in log_probs_turn:
-                rewards.append(score)  # Add the same reward for each action in this turn
+                rewards.append(score)
             
             # Add the log probabilities of all actions from this turn to the main list
             log_probs.extend(log_probs_turn)
 
             # store the score for later calculations
-            scores_achieved[score_decision_idx] = score
+            scores_achieved[score_decision_idx] = max(score, 0)
 
         # compute the total score for this sheet
         total_score = calculate_total_score(scores_achieved)
@@ -201,6 +206,7 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
         
         # Compute discounted rewards
         discounted_rewards = compute_discounted_rewards(rewards, settings["gamma"])
+        logging.debug("discounted_rewards: %s" % discounted_rewards)
         
         # Normalize rewards for stability
         discounted_rewards = torch.tensor(discounted_rewards)
@@ -216,7 +222,7 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
         policy_loss = torch.stack(policy_loss).sum()
 
         # Calculate the total entropy (summed over all actions) to encourage exploration
-        entropy_term = torch.stack(entropy_terms).sum()
+        entropy_term = torch.stack(entropy_terms).mean()
         policy_loss = policy_loss - float(settings["entropy_coefficient"]) * entropy_term
 
         logging.debug("policy loss: %s" % policy_loss.item())
@@ -224,21 +230,40 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
         # Backpropagate
         optimizer.zero_grad()
         policy_loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
         # append losses and scores for plotting later
-        losses.append(policy_loss)
+        losses.append(policy_loss.detach().item())
         scores.append(total_score)
 
         logging.debug("Sum of rewards: %s" % sum(rewards))
         logging.debug("Episode %s: Total score: %s" % (episode + 1, total_score))
 
-    plot_policy_losses([l.detach().item() for l in losses])
-    plot_game_scores(scores)
+    # store the results
+
+    # TODO: create a output/training folder
+    if not os.path.exists("output/training"):
+        os.makedirs("output/training")
+    
+    # check for previous runs and get the index for the next run
+    try:
+        next_run_idx = sorted([int(d.split("run")[1]) for d in os.listdir("output/training")])[-1] + 1
+    except IndexError:
+        next_run_idx = 0
+    # create a run0, run1, ... folder
+    run_folder = f"output/training/run{next_run_idx}"
+    os.makedirs(run_folder)
+
+    plot_policy_losses(losses, run_folder)
+    plot_game_scores(scores, run_folder)
+
+    # save model settings
+    copy2('settings.yaml', os.path.join(run_folder, "settings.yaml"))
 
 
 def get_optimizer(model: torch.nn.Module, settings: dict) -> optim.Optimizer:
-    return optim.Adam(model.parameters(), lr=settings["learning_rate"])
+    return optim.Adam(model.parameters(), lr=float(settings["learning_rate"]))
 
 
 if __name__ == "__main__":
@@ -247,7 +272,7 @@ if __name__ == "__main__":
         settings = yaml.safe_load(file)
 
     model = DiceNetwork()
-    summary(model)
+    summary(model, input_data={"x": prepare_input([1] * 5, [0] * 13, 2), "rolls_left": 2})
 
     optimizer = get_optimizer(model, settings)
 

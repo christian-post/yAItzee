@@ -155,4 +155,4 @@ dmypy.json
 cython_debug/
 
 # custom
-output/*.png
+output/*

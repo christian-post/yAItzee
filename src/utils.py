@@ -1,3 +1,4 @@
+import os
 import matplotlib
 import matplotlib.pyplot as plt
 import logging
@@ -8,26 +9,56 @@ from typing import Union
 
 logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)
 
-def plot_policy_losses(losses: list[float]):
+
+def plot_results(y: list[float], **kwargs) -> None:
+    """base function for the other plotting functions"""
     plt.figure(figsize=(10, 6))
-    plt.plot(losses, label='Policy Loss', color='blue')
-    plt.xlabel('Episode')
-    plt.ylabel('Policy Loss')
-    plt.title('Policy Loss over Training Episodes')
+
+    if len(y) > 100:
+        # Bin the losses into 100 bins
+        bins = np.array_split(y, 100)
+        bin_means = [np.mean(bin_) for bin_ in bins]
+
+        # Plot vertical lines for all values in each bin (semi-transparent)
+        for i, bin_ in enumerate(bins):
+            plt.vlines(i, min(bin_), max(bin_), kwargs["color"], alpha=0.4)
+
+        # Plot the mean of each bin (opaque)
+        plt.plot(bin_means, label=kwargs["label"], color=kwargs["color"], alpha=1.0)
+    else:
+        # If less than or equal to 100, plot all values as usual
+        plt.plot(y, label=kwargs["label"], color=kwargs["color"])
+
+    plt.xlabel(kwargs["xlabel"])
+    plt.ylabel(kwargs["ylabel"])
+    plt.title(kwargs["title"])
     plt.grid(True)
     plt.legend()
-    plt.savefig("output/training_loss.png")
+    plt.savefig(kwargs["filename"])
 
 
-def plot_game_scores(scores: list[float]):
-    plt.figure(figsize=(10, 6))
-    plt.plot(scores, label='Game Score', color='blue')
-    plt.xlabel('Episode')
-    plt.ylabel('Game Score')
-    plt.title('Game Score over Training Episodes')
-    plt.grid(True)
-    plt.legend()
-    plt.savefig("output/training_scores.png")
+def plot_policy_losses(losses: list[float], folder: str):
+    plot_results(
+        y=losses,
+        label="Policy Loss",
+        color="blue", 
+        xlabel="Episode",
+        ylabel="Policy Loss", 
+        title="Policy Loss over Training Episodes",
+        filename=os.path.join(folder, "training_loss.png")
+    )
+
+
+def plot_game_scores(scores: list[float], folder: str):
+    plot_results(
+        y=scores, 
+        label="Game Score", 
+        color="red", 
+        xlabel="Episode", 
+        ylabel="Game Score", 
+        title="Game Score over Training Episodes",
+        filename=os.path.join(folder, "training_scores.png")
+    )
 
 
 def format_input(input_vector: Union[torch.Tensor, np.array, list[int]]) -> str:
