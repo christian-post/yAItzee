@@ -88,6 +88,7 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
         logging.debug("############################ Starting Episode %s ############################" % (episode + 1))
         rewards = []
         log_probs = []
+        entropy_terms = []  # List to store entropy terms
 
         # Initialize game state
         score_categories = [0] * 13  # All categories unfilled
@@ -114,8 +115,10 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
                 
                 # Sample action (re-roll decision) from the policy's probability distribution
                 dice_action_dist = Bernoulli(dice_decisions)
-                # dice_action_dist = Categorical(dice_decisions)
-                dice_action = dice_action_dist.sample()  # Sample action based on policy
+                # Collect entropy for dice decisions
+                entropy_terms.append(dice_action_dist.entropy().mean())
+                # Sample action based on policy
+                dice_action = dice_action_dist.sample()  
 
                 logging.debug("dice action: %s" % dice_action)
                 
@@ -133,7 +136,10 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
             # After the final roll, select a score category
             _, score_decisions = model(input_vector, rolls_left=0)
             score_action_dist = Categorical(score_decisions)
-            score_action = score_action_dist.sample()  # Sample score category
+            # Collect entropy for score category selection
+            entropy_terms.append(score_action_dist.entropy().mean())
+            # Sample score category
+            score_action = score_action_dist.sample() 
             
             # Store log prob for backprop
             log_probs_turn.append(score_action_dist.log_prob(score_action))  
@@ -208,6 +214,11 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
             policy_loss.append(-log_prob * reward)
 
         policy_loss = torch.stack(policy_loss).sum()
+
+        # Calculate the total entropy (summed over all actions) to encourage exploration
+        entropy_term = torch.stack(entropy_terms).sum()
+        policy_loss = policy_loss - float(settings["entropy_coefficient"]) * entropy_term
+
         logging.debug("policy loss: %s" % policy_loss.item())
         
         # Backpropagate
@@ -236,7 +247,7 @@ if __name__ == "__main__":
         settings = yaml.safe_load(file)
 
     model = DiceNetwork()
-    logging.debug(summary(model))
+    summary(model)
 
     optimizer = get_optimizer(model, settings)
 
