@@ -78,3 +78,26 @@ def calculate_score(dice: Union[torch.Tensor, np.array, list[int]], category: in
     
     # Invalid category, return 0
     return 0
+
+
+
+def calculate_total_score(scores_achieved: list[int]) -> int:
+    """
+    Sums up all achieved scores on the scorecard and checks for the bonus points
+
+    Parameters:
+    scores_achieved: list[int]: A complete list of scores achieved in one round.
+
+    Returns:
+    Total Score
+    """
+    # TODO: return the bonus as well for better rewards?
+
+    bonus = 0
+    total_score = sum(scores_achieved)
+
+    if sum(scores_achieved[:5]) >= 63:
+        bonus = 35
+        total_score += bonus
+
+    return total_score

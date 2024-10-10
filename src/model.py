@@ -11,8 +11,8 @@ import logging
 
 from torch_utils import prepare_input, reroll_dice, initialize_weights
 from rules import validate_dice_categories
-from score import calculate_score
-from utils import plot_policy_losses, plot_game_scores, format_input
+from score import calculate_score, calculate_total_score
+from utils import plot_policy_losses, plot_game_scores, format_input, format_score_action
 
 
 logging.basicConfig(
@@ -20,12 +20,12 @@ logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s: %(message)s", datefmt="%d-%b-%y %H:%M:%S",
         handlers=[
-            logging.FileHandler("debug.log"),
+            logging.FileHandler("debug.log", mode="w"),
             logging.StreamHandler(sys.stdout)
         ]
     )
 
-logging.info(__file__)
+logging.debug(__file__)
 
 
 class DiceNetwork(nn.Module):
@@ -85,12 +85,13 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
     for episode in tqdm(
         range(settings["training_episodes"]), 
         disable=logging.getLogger().isEnabledFor(logging.DEBUG)):
-        logging.debug("############### Starting Episode %s ###############" % (episode + 1))
+        logging.debug("############################ Starting Episode %s ############################" % (episode + 1))
         rewards = []
         log_probs = []
 
         # Initialize game state
         score_categories = [0] * 13  # All categories unfilled
+        scores_achieved = [0] * 13  # Store the actual scores after each turn
         
         for _ in range(13):  # 13 turns in Yahtzee
             score = 0
@@ -102,14 +103,14 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
 
             # While there are rolls left, make re-roll decisions
             while rolls_left > 0:
-                logging.debug("re-rolls left: %s" % rolls_left)
+                logging.debug("rerolls left: %s" % rolls_left)
 
                 input_vector = prepare_input(dice, score_categories, rolls_left)
                 logging.debug("input vector: %s" % format_input(input_vector))
-                dice_decisions, score_decision = model(input_vector, rolls_left)
+                dice_decisions, score_decisions = model(input_vector, rolls_left)
 
                 logging.debug("dice decisions: %s" % dice_decisions)
-                logging.debug("score decisions: %s" % score_decision)
+                logging.debug("score decisions: %s" % score_decisions)
                 
                 # Sample action (re-roll decision) from the policy's probability distribution
                 dice_action_dist = Bernoulli(dice_decisions)
@@ -123,14 +124,15 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
                 # Apply dice re-roll decision
                 if dice_action.sum() == 0:
                     # Model decided to keep all dice, break early
+                    logging.debug("Model keeps the dice.")
                     break
                 dice = reroll_dice(dice, dice_action.detach().numpy())  # Re-roll dice
-                logging.debug("reroll: %s" % dice)
+                logging.debug("reroll result: %s" % dice)
                 rolls_left -= 1
             
             # After the final roll, select a score category
-            _, score_decision = model(input_vector, rolls_left=0)
-            score_action_dist = Categorical(score_decision)
+            _, score_decisions = model(input_vector, rolls_left=0)
+            score_action_dist = Categorical(score_decisions)
             score_action = score_action_dist.sample()  # Sample score category
             
             # Store log prob for backprop
@@ -149,12 +151,14 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
                 # If there are no valid categories left, we need to "cross out" a category
                 if np.sum(valid_categories) == 0:
                     logging.debug("No valid categories left. Choosing a random unfilled category to cross out.")
+                    # TODO: can the model be trained to choose a category here?
                     unfilled_categories = [i for i, filled in enumerate(score_categories) if filled == 0]
                     # Randomly pick a remaining category
                     score_decision_idx = np.random.choice(unfilled_categories)
+                    score = 0
                 else:
                     # Select the valid category with the highest predicted score
-                    valid_scores = np.where(np.array(valid_categories) == 1, score_decision.detach().numpy(), -np.inf)
+                    valid_scores = np.where(np.array(valid_categories) == 1, score_decisions.detach().numpy(), -np.inf)
                     score_decision_idx = np.argmax(valid_scores)
                 
                     # Apply the score decision and calculate the score
@@ -163,8 +167,15 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
                 # Mark the category as filled
                 score_categories[score_decision_idx] = 1
 
-            logging.debug("score decision: %s" % score_decision_idx)
-            logging.debug("score categories: %s" % "".join([str(x) for x in score_categories]))
+            if score > 0:
+                logging.debug("Model decides to choose %s with dice %s. Resulting score: %s" % (
+                    format_score_action(score_decision_idx), dice.numpy(), score
+                ))
+            else:
+                logging.debug("Model decides to cross out %s" % (format_score_action(score_decision_idx)))
+            # logging.debug("score decision: %s (%s)" % (score_decision_idx, format_score_action(score_decision_idx)))
+            # logging.debug("Score: %s" % score)
+            logging.debug("scores taken after this turn: %s" % "".join([str(x) for x in score_categories]))
         
             # Replicate the reward for each action taken in this turn (re-rolls + score decision)
             for _ in log_probs_turn:
@@ -172,6 +183,15 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
             
             # Add the log probabilities of all actions from this turn to the main list
             log_probs.extend(log_probs_turn)
+
+            # store the score for later calculations
+            scores_achieved[score_decision_idx] = score
+
+        # compute the total score for this sheet
+        total_score = calculate_total_score(scores_achieved)
+
+        # add the total score to all rewards
+        rewards = [r + total_score for r in rewards]
         
         # Compute discounted rewards
         discounted_rewards = compute_discounted_rewards(rewards, settings["gamma"])
@@ -188,17 +208,19 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
             policy_loss.append(-log_prob * reward)
 
         policy_loss = torch.stack(policy_loss).sum()
-        logging.debug("policy loss: %s" % policy_loss)
-
-        losses.append(policy_loss)
-        scores.append(sum(rewards))
+        logging.debug("policy loss: %s" % policy_loss.item())
         
         # Backpropagate
         optimizer.zero_grad()
         policy_loss.backward()
         optimizer.step()
 
-        logging.debug(f"Episode %s: Total score: %s" % (episode + 1, sum(rewards)))
+        # append losses and scores for plotting later
+        losses.append(policy_loss)
+        scores.append(total_score)
+
+        logging.debug("Sum of rewards: %s" % sum(rewards))
+        logging.debug("Episode %s: Total score: %s" % (episode + 1, total_score))
 
     plot_policy_losses([l.detach().item() for l in losses])
     plot_game_scores(scores)
@@ -214,7 +236,7 @@ if __name__ == "__main__":
         settings = yaml.safe_load(file)
 
     model = DiceNetwork()
-    summary(model)
+    logging.debug(summary(model))
 
     optimizer = get_optimizer(model, settings)
 
