@@ -18,8 +18,8 @@ from utils import plot_policy_losses, plot_game_scores, format_input, format_sco
 
 
 logging.basicConfig(
-        level=logging.DEBUG,
-        # level=logging.INFO,
+        # level=logging.DEBUG,
+        level=logging.INFO,
         format="%(asctime)s - %(levelname)s: %(message)s", datefmt="%d-%b-%y %H:%M:%S",
         handlers=[
             logging.FileHandler("debug.log", mode="w"),
@@ -30,12 +30,15 @@ logging.basicConfig(
 logging.debug(__file__)
 
 
+
 class DiceNetwork(nn.Module):
     def __init__(self):
         super(DiceNetwork, self).__init__()
 
-        device = torch.cuda.get_device_name(torch.cuda.current_device())
-        print(f"The model is running on {device}")
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.to(device)
+        device_name = torch.cuda.get_device_name(torch.cuda.current_device())
+        print(f"The model is running on {device_name}")
 
         # Shared layers
         self.fc1 = nn.Linear(44, 128)  # Input: dice (30), score info (13), rolls left (1)
@@ -88,15 +91,18 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
         range(settings["training_episodes"]), 
         disable=logging.getLogger().isEnabledFor(logging.DEBUG)
         ):
-        logging.debug("############################ Starting Episode %s ############################" % (episode + 1))
+        logging.debug("%s Starting Episode %s %s" % ("#" * 30, episode + 1, "#" * 30))
 
         rewards = []  # store the rewards for actions based on the score sheet
         log_probs = []  # store the log probabilities of actions for reward calculation
         entropy_terms = []  # store mean entropy of actions to calculate the total entropy
 
         # Initialize game state
-        score_categories = [0] * 13  # Score card, all categories unfilled (either 0 or 1)
+        score_categories = [0] * 13  # Scorecard, all categories unfilled (either 0 or 1)
         scores_achieved = [0] * 13  # Store the actual scores after each turn
+
+        model.train()
+        optimizer.zero_grad()
         
         for _ in range(13):  # 13 turns in Yahtzee
             score = 0
@@ -183,8 +189,7 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
                 ))
             else:
                 logging.debug("Model decides to cross out %s" % (format_score_action(score_decision_idx)))
-            # logging.debug("score decision: %s (%s)" % (score_decision_idx, format_score_action(score_decision_idx)))
-            # logging.debug("Score: %s" % score)
+
             logging.debug("scores taken after this turn: %s" % "".join([str(x) for x in score_categories]))
         
             # Replicate the reward for each action taken in this turn (re-rolls + score decision)
@@ -202,20 +207,25 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
         total_score = calculate_total_score(scores_achieved)
 
         # add the total score to all rewards
-        rewards = [r + total_score for r in rewards]
+        # rewards = [r + total_score for r in rewards]
+        rewards.append(total_score)
+        # Use the mean of log_probs as a proxy for the entire episode
+        average_log_prob = torch.stack(log_probs).mean()
+        log_probs.append(average_log_prob)
         
         # Compute discounted rewards
-        discounted_rewards = compute_discounted_rewards(rewards, settings["gamma"])
-        logging.debug("discounted_rewards: %s" % discounted_rewards)
+        logging.debug("rewards: %s" % rewards)
+        rewards = compute_discounted_rewards(rewards, settings["gamma"])
+        logging.debug("discounted_rewards: %s" % rewards)
         
         # Normalize rewards for stability
-        discounted_rewards = torch.tensor(discounted_rewards)
-        discounted_rewards = (discounted_rewards - discounted_rewards.mean()) / (discounted_rewards.std() + 1e-9)
+        rewards = torch.tensor(rewards)
+        rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-9)
         
         # Compute the policy gradient loss
         policy_loss = []
         logging.debug("computing policy loss")
-        for log_prob, reward in zip(log_probs, discounted_rewards):
+        for log_prob, reward in zip(log_probs, rewards):
             # Multiply log-probability by the discounted reward
             policy_loss.append(-log_prob * reward)
 
@@ -228,7 +238,6 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
         logging.debug("policy loss: %s" % policy_loss.item())
         
         # Backpropagate
-        optimizer.zero_grad()
         policy_loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -267,10 +276,9 @@ def get_optimizer(model: torch.nn.Module, settings: dict) -> optim.Optimizer:
 
 
 if __name__ == "__main__":
-
     with open('settings.yaml', 'r') as file:
-        settings = yaml.safe_load(file)
-
+            settings = yaml.safe_load(file)
+            
     model = DiceNetwork()
     summary(model, input_data={"x": prepare_input([1] * 5, [0] * 13, 2), "rolls_left": 2})
 
