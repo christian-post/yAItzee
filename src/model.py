@@ -18,8 +18,8 @@ from utils import plot_policy_losses, plot_game_scores, format_input, format_sco
 
 
 logging.basicConfig(
-        level=logging.DEBUG,
-        # level=logging.INFO,
+        # level=logging.DEBUG,
+        level=logging.INFO,
         format="%(asctime)s - %(levelname)s: %(message)s", datefmt="%d-%b-%y %H:%M:%S",
         handlers=[
             logging.FileHandler("debug.log", mode="w"),
@@ -32,7 +32,7 @@ logging.debug(__file__)
 
 
 class DiceNetwork(nn.Module):
-    def __init__(self):
+    def __init__(self, settings):
         super(DiceNetwork, self).__init__()
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -41,26 +41,30 @@ class DiceNetwork(nn.Module):
         print(f"The model is running on {device_name}")
 
         # Shared layers
-        self.fc1 = nn.Linear(44, 128)  # Input: dice (30), score info (13), rolls left (1)
-        self.fc2 = nn.Linear(128, 128)  # Shared hidden layer
-        self.fc3 = nn.Linear(128, 128)  # Another shared hidden layer
+        self.shared_layers = nn.ModuleList()
+
+        # Input layer
+        self.shared_layers.append(nn.Linear(44, settings["hidden_layer_sizes"][0]))
+        # hidden layers
+        for i, layer in enumerate(settings["hidden_layer_sizes"], start=1):
+            self.shared_layers.append(
+                nn.Linear(settings["hidden_layer_sizes"][i-1], layer))
         
         # Dice re-roll head (outputs 5 binary decisions for dice)
-        self.dice_output = nn.Linear(128, 5)  # 5 outputs for re-rolling dice
+        self.dice_output = nn.Linear(settings["hidden_layer_sizes"][-1], 5)
         
         # Score box head (outputs 13 categorical probabilities for scoring)
-        self.score_output = nn.Linear(128, 13)  # 13 outputs for score box decision
+        self.score_output = nn.Linear(settings["hidden_layer_sizes"][-1], 13)  
 
 
     def forward(self, x, rolls_left):
         # Shared layers
-        x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc2(x))
-        x = torch.relu(self.fc3(x))
+        for layer in self.shared_layers:
+            x = torch.relu(layer(x))
         
         # Dice re-roll decision: Sigmoid activation for binary output (only if rolls left > 0)
         if rolls_left > 0:
-            dice_decisions = torch.sigmoid(self.dice_output(x))  # Re-roll decision
+            dice_decisions = torch.sigmoid(self.dice_output(x))
         else:
             dice_decisions = None  # No re-roll decision when rolls left is 0
       
@@ -139,7 +143,7 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
                     # Model decided to keep all dice, break early
                     logging.debug("Model keeps the dice.")
                     break
-                dice = reroll_dice(dice, dice_action.detach().numpy())  # Re-roll dice
+                dice = reroll_dice(dice, dice_action.detach().numpy())
                 logging.debug("reroll result: %s" % dice)
                 rolls_left -= 1
             
@@ -151,7 +155,7 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
             # Sample score category
             score_action = score_action_dist.sample() 
             
-            # Store log prob for backprop
+            # Store log probability for backprop
             log_probs_turn.append(score_action_dist.log_prob(score_action))  
             
             # Get valid categories and ensure action is valid
@@ -288,7 +292,7 @@ if __name__ == "__main__":
     with open('settings.yaml', 'r') as file:
             settings = yaml.safe_load(file)
             
-    model = DiceNetwork()
+    model = DiceNetwork(settings)
     summary(model, input_data={"x": prepare_input([1] * 5, [0] * 13, 2), "rolls_left": 2})
 
     optimizer = get_optimizer(model, settings)

@@ -19,12 +19,16 @@ def plot_results(y: list[float], **kwargs) -> None:
         bins = np.array_split(y, 100)
         bin_means = [np.mean(bin_) for bin_ in bins]
 
+        # Compute the x-axis values (the average episode number for each bin)
+        bin_indices = np.array_split(range(len(y)), 100)
+        x_vals = [np.mean(indices) for indices in bin_indices]
+
         # Plot vertical lines for all values in each bin (semi-transparent)
         for i, bin_ in enumerate(bins):
-            plt.vlines(i, min(bin_), max(bin_), kwargs["color"], alpha=0.4)
+            plt.vlines(x_vals[i], min(bin_), max(bin_), kwargs["color"], alpha=0.4)
 
         # Plot the mean of each bin (opaque)
-        plt.plot(bin_means, label=kwargs["label"], color=kwargs["color"], alpha=1.0)
+        plt.plot(x_vals, bin_means, label=kwargs["label"], color=kwargs["color"], alpha=1.0)
     else:
         # If less than or equal to 100, plot all values as usual
         plt.plot(y, label=kwargs["label"], color=kwargs["color"])
