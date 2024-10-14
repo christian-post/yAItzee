@@ -18,8 +18,8 @@ from utils import plot_policy_losses, plot_game_scores, format_input, format_sco
 
 
 logging.basicConfig(
-        # level=logging.DEBUG,
-        level=logging.INFO,
+        level=logging.DEBUG,
+        # level=logging.INFO,
         format="%(asctime)s - %(levelname)s: %(message)s", datefmt="%d-%b-%y %H:%M:%S",
         handlers=[
             logging.FileHandler("debug.log", mode="w"),
@@ -204,7 +204,7 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
             scores_achieved[score_decision_idx] = max(score, 0)
 
         # compute the total score for this sheet
-        total_score = calculate_total_score(scores_achieved)
+        total_score, bonus = calculate_total_score(scores_achieved)
 
         # add the total score to all rewards
         # rewards = [r + total_score for r in rewards]
@@ -219,12 +219,11 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
         logging.debug("discounted_rewards: %s" % rewards)
         
         # Normalize rewards for stability
-        rewards = torch.tensor(rewards)
+        rewards = torch.tensor(rewards, dtype=torch.float32)
         rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-9)
         
         # Compute the policy gradient loss
         policy_loss = []
-        logging.debug("computing policy loss")
         for log_prob, reward in zip(log_probs, rewards):
             # Multiply log-probability by the discounted reward
             policy_loss.append(-log_prob * reward)
@@ -246,8 +245,15 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
         losses.append(policy_loss.detach().item())
         scores.append(total_score)
 
-        logging.debug("Sum of rewards: %s" % sum(rewards))
-        logging.debug("Episode %s: Total score: %s" % (episode + 1, total_score))
+        logging.debug("Episode %s - Total score: %s" % (episode + 1, total_score))
+
+        # summary of scores
+        for idx, score in enumerate(scores_achieved):
+            log_str = f"{format_score_action(idx)}, Score: {score}"
+            logging.debug(log_str)
+            if idx == 5:
+                logging.debug("Upper Half Bonus, Score: %s" % bonus)
+
 
     # store the results
 
@@ -269,6 +275,9 @@ def train_model(model: torch.nn.Module, optimizer: torch.optim.Optimizer, settin
 
     # save model settings
     copy2('settings.yaml', os.path.join(run_folder, "settings.yaml"))
+
+    # save model
+    torch.save(model.state_dict(), os.path.join(run_folder, "model.pth"))
 
 
 def get_optimizer(model: torch.nn.Module, settings: dict) -> optim.Optimizer:

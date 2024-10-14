@@ -100,4 +100,4 @@ def calculate_total_score(scores_achieved: list[int]) -> int:
         bonus = 35
         total_score += bonus
 
-    return total_score
+    return total_score, bonus
