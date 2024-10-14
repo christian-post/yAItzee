@@ -44,39 +44,50 @@ class DiceNetwork(nn.Module):
         self.shared_layers = nn.ModuleList()
 
         # Input layer
-        self.shared_layers.append(nn.Linear(44, settings["hidden_layer_sizes"][0]))
+        self.shared_layers.append(nn.Linear(44, settings["shared_layers"][0]))
         # hidden layers
-        for i, layer in enumerate(settings["hidden_layer_sizes"], start=1):
+        for i, layer_size in enumerate(settings["shared_layers"], start=1):
             self.shared_layers.append(
-                nn.Linear(settings["hidden_layer_sizes"][i-1], layer))
+                nn.Linear(self.shared_layers[i-1].out_features, layer_size))
         
         # Dice re-roll head (outputs 5 binary decisions for dice)
-        self.dice_output = nn.Linear(settings["hidden_layer_sizes"][-1], 5)
+        self.dice_hidden = nn.Linear(
+            settings["shared_layers"][-1], settings["shared_layers"][-1])  # extra hidden layer
+        self.dice_output = nn.Linear(settings["shared_layers"][-1], 5)
         
         # Score box head (outputs 13 categorical probabilities for scoring)
-        self.score_output = nn.Linear(settings["hidden_layer_sizes"][-1], 13)  
+        self.score_hidden = nn.Linear(
+            settings["shared_layers"][-1], settings["shared_layers"][-1])
+        self.score_output = nn.Linear(settings["shared_layers"][-1], 13)
+
+        self.dropout = nn.Dropout(p=0.2)
 
 
     def forward(self, x, rolls_left):
         # Shared layers
         for layer in self.shared_layers:
             x = torch.relu(layer(x))
+            x = self.dropout(x)
         
         # Dice re-roll decision: Sigmoid activation for binary output (only if rolls left > 0)
         if rolls_left > 0:
-            dice_decisions = torch.sigmoid(self.dice_output(x))
+            dice_x = torch.relu(self.dice_hidden(x))
+            dice_x = self.dropout(dice_x)
+            dice_decisions = torch.sigmoid(self.dice_output(dice_x))
         else:
             dice_decisions = None  # No re-roll decision when rolls left is 0
       
         # Score category decision: Softmax activation for categorical output
-        score_decision = torch.softmax(self.score_output(x), dim=0)  # Score category decision
+        score_x = torch.relu(self.score_hidden(x))
+        score_x = self.dropout(score_x)
+        score_decision = torch.softmax(self.score_output(score_x), dim=0)  # Score category decision
         
         return dice_decisions, score_decision
 
 
 def compute_discounted_rewards(rewards: list[int], gamma: float) -> list[float]:
     """
-    Compute the discounted cumulative rewards for the episode.
+    Compute the discounted cumulative rewards for the episode (recursive method)
     """
     discounted_rewards = []
     cumulative_reward = 0
@@ -288,12 +299,16 @@ def get_optimizer(model: torch.nn.Module, settings: dict) -> optim.Optimizer:
     return optim.Adam(model.parameters(), lr=float(settings["learning_rate"]))
 
 
+def print_summary(model):
+    summary(model, input_data={"x": prepare_input([1] * 5, [0] * 13, 2), "rolls_left": 2})
+
+
 if __name__ == "__main__":
     with open('settings.yaml', 'r') as file:
             settings = yaml.safe_load(file)
             
     model = DiceNetwork(settings)
-    summary(model, input_data={"x": prepare_input([1] * 5, [0] * 13, 2), "rolls_left": 2})
+    print_summary(model)
 
     optimizer = get_optimizer(model, settings)
 
